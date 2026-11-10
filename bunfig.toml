@@ -1,0 +1,3 @@
+[test]
+# Every test gets a HOME of its own, so git never reads or writes yours.
+preload = ["./test/setup.ts"]

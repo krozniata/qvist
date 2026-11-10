@@ -1,0 +1,40 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+jobs:
+  release:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+      # The tag becomes the binary's version string, so only a version may.
+      - name: Check the tag
+        run: |
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "::error::$GITHUB_REF_NAME is not a version tag like v1.2.3"; exit 1; }
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - run: bunx tsc --noEmit -p .
+      - run: bun test
+      - run: bun script/notices.ts --check
+      - name: Build
+        run: |
+          mkdir dist
+          bun build src/main.ts --compile --target=bun-darwin-arm64 --define "QVIST_VERSION=\"${GITHUB_REF_NAME#v}\"" --outfile dist/qvist
+          cp LICENSE THIRD_PARTY_NOTICES dist/
+          tar -czf qvist-darwin-arm64.tar.gz -C dist qvist LICENSE THIRD_PARTY_NOTICES
+          shasum -a 256 qvist-darwin-arm64.tar.gz > qvist-darwin-arm64.tar.gz.sha256
+      - name: Publish
+        run: gh release create "$GITHUB_REF_NAME" qvist-darwin-arm64.tar.gz qvist-darwin-arm64.tar.gz.sha256 --verify-tag --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
