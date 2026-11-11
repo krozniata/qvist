@@ -138,5 +138,8 @@ function footer(a: App): Line {
       l.add(key, t.content, { bold: true }).add(` ${label}   `, t.secondary);
     }
   });
+  // A newer release goes at the right, when the shortcuts leave room for it.
+  const note = "Update available! Run ", cmd = "qvist upgrade";
+  if (a.upgrade && l.left >= width(note) + width(cmd) + 2) l.pad(l.left - width(note) - width(cmd) - 2).add(note, t.success).add(cmd, t.success, { bold: true });
   return l;
 }
