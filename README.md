@@ -32,7 +32,7 @@ curl -fsSL https://raw.githubusercontent.com/krozniata/qvist/main/install.sh | s
 
 Then press <kbd>⇧⌘K</kbd> in Rex, or run `qvist` in any repository
 
-To upgrade, run the script again. `qvist uninstall` takes the shortcut out of
+To upgrade, run `qvist upgrade`. `qvist uninstall` takes the shortcut out of
 Rex
 
 ## 📄 License

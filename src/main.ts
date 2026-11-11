@@ -2,6 +2,7 @@
 // terminal, with Pierre's diffs, in the colours of the Rex theme around it.
 import { App } from "./app/app";
 import { install, uninstall } from "./install/install";
+import { availableUpgrade, upgrade } from "./install/upgrade";
 import { warmWorker } from "./model/background";
 import { Terminal } from "./terminal/term";
 
@@ -9,10 +10,11 @@ import { Terminal } from "./terminal/term";
 declare const QVIST_VERSION: string | undefined;
 const version = typeof QVIST_VERSION === "string" ? QVIST_VERSION : "dev";
 
-const usage = `usage: qvist [DIR] | qvist install | qvist uninstall
+const usage = `usage: qvist [DIR] | qvist install | qvist uninstall | qvist upgrade
   DIR           a directory in the repository to open (default: the current one)
   install       adds qvist's action to Rex: shift+cmd+k opens it beside the focused pane
   uninstall     takes it out again
+  upgrade       replaces qvist with the latest release, unless it is the latest already
   -v, --version prints qvist's version`;
 
 async function main(args: string[]): Promise<void> {
@@ -20,6 +22,7 @@ async function main(args: string[]): Promise<void> {
   if (args.some((a) => a === "-v" || a === "--version")) return console.log(`qvist ${version}`);
   if (args[0] === "install") return install(process.execPath);
   if (args[0] === "uninstall") return uninstall();
+  if (args[0] === "upgrade") return upgrade(version);
   const dir = args.find((a) => !a.startsWith("-")) ?? process.cwd();
   // qvist draws on, and reads keys from, the terminal it runs in.
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
@@ -42,11 +45,22 @@ async function main(args: string[]): Promise<void> {
   for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(sig, () => (done(), process.exit(0)));
   try {
     await a.start(dir);
+    // Asking about a newer release waits for the first frame, so it never
+    // holds that up; the footer offers one once it is known.
+    void availableUpgrade(version).then((v) => {
+      a.upgrade = v;
+      if (v) a.render();
+    });
     await a.run();
   } finally {
     done();
   }
 }
 
-await main(process.argv.slice(2));
-process.exit(0);
+try {
+  await main(process.argv.slice(2));
+  process.exit(0);
+} catch (err) {
+  console.error("qvist:", err instanceof Error ? err.message : err);
+  process.exit(1);
+}

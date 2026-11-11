@@ -102,6 +102,8 @@ export class App {
   remotes: string[] = [];
   syncing: "fetch" | "pull" | "push" | "sync" | null = null;
   fetchTimer: ReturnType<typeof setTimeout> | undefined;
+  // upgrade is a newer release's version, which the footer offers.
+  upgrade: string | null = null;
   // The terminal's colours as last reported, asked again every two seconds:
   // a terminal's word of theme changes (2031) only covers dark against light,
   // not one dark theme for another.
