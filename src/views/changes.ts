@@ -1,13 +1,13 @@
 // The Changes tab: the message, commit and sync buttons and the files in a
 // card, beside the diff's card.
 import type { App, Item } from "../app/app";
-import { layoutOf } from "../app/layout";
+import { layoutOf, messageLines } from "../app/layout";
 import { field, fieldCursor } from "../ui/field";
 import { card, tileEdge } from "../ui/frame";
 import { blank, Line, row } from "../ui/line";
-import { sectionHeader, tileList } from "../ui/list";
+import { tileList } from "../ui/list";
 import { clip, width } from "../ui/text";
-import { beside, bodyCols, bodyRows, fileRow } from "./common";
+import { beside, bodyCols, bodyRows, fileRow, stageGlyph } from "./common";
 import { diffPane } from "./diff";
 
 export function changes(a: App): string[] {
@@ -16,7 +16,7 @@ export function changes(a: App): string[] {
   const left: Line[] = [];
 
   // The message.
-  const msgLines = a.message === "" ? [] : a.message.split("\n").slice(-messageRows);
+  const msgLines = a.message === "" ? [] : messageLines(a);
   left.push(...field(t, { cols: inner, base: t.sidebar, at: [contentTop, 2], rows: messageRows, text: msgLines, placeholder: "Message", hint: "c", focused: a.focus === "message" }));
 
   // The commit button, a tile that lights up once something is staged.
@@ -44,9 +44,10 @@ export function changes(a: App): string[] {
     at: [contentTop + left.length, 2],
     tile: (it) => it.kind === "file",
     hit: (screen, i) => a.rowMap.set(screen, i),
+    pad: (screen, i) => (a.rowMap.set(screen, i), a.padRows.add(screen)),
     draw: (l, it, _i, on) =>
       // The section titles take the accent while the list has focus.
-      it.kind === "header" ? l.add(" " + (it.staged ? "STAGED CHANGES" : "CHANGES"), a.focus === "list" ? t.accent : t.secondary, { bold: true }).right(`${it.count} `, t.tertiary) : fileRow(a, l, it.change.path, it.change.code, on, true, 2),
+      it.kind === "header" ? l.add(" " + (it.staged ? "STAGED CHANGES" : "CHANGES"), a.focus === "list" ? t.accent : t.secondary, { bold: true }).right(`${it.count}  ${stageGlyph(it.staged)} `, t.tertiary) : fileRow(a, l, it.change.path, it.change.code, on, true, 2, stageGlyph(it.change.staged)),
   });
   a.listTop = list.top;
   left.push(...list.lines, blank(inner, t.sidebar), ...committer);
@@ -95,13 +96,12 @@ function committerRows(a: App, cols: number): Line[] {
   return [
     row(cols, t.sidebar, null, (l) => l.add("─".repeat(cols - 2), t.strokeSubtle)),
     // Who commits is set in Config, not here.
-    sectionHeader(t, cols, t.sidebar, "Committer"),
     value("username", id?.name ?? ""),
     value("email", id?.email ?? ""),
   ];
 }
 
 export function messageCursor(a: App): string {
-  const { messageRows, contentTop } = layoutOf(a);
-  return fieldCursor({ at: [contentTop, 2], text: a.message.split("\n").slice(-messageRows) });
+  const { contentTop } = layoutOf(a);
+  return fieldCursor({ at: [contentTop, 2], text: messageLines(a) });
 }

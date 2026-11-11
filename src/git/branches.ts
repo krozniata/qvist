@@ -4,7 +4,7 @@ import { git, US } from "./run";
 export type Branch = { name: string; current: boolean; remote: boolean; upstream: string; track: string };
 
 export async function branches(repo: string): Promise<Branch[]> {
-  const out = await git(repo, ["for-each-ref", `--format=%(refname:short)${US}%(HEAD)${US}%(upstream:short)${US}%(refname)${US}%(upstream:track)`, "refs/heads", "refs/remotes"]);
+  const out = await git(repo, ["for-each-ref", "--sort=-committerdate", `--format=%(refname:short)${US}%(HEAD)${US}%(upstream:short)${US}%(refname)${US}%(upstream:track)`, "refs/heads", "refs/remotes"]);
   return out.split("\n").filter(Boolean).map((l) => {
     const [name, head, upstream, ref, track] = l.split(US);
     return { name, current: head === "*", remote: ref.startsWith("refs/remotes/"), upstream, track };

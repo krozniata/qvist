@@ -26,6 +26,7 @@ export type TileListSpec<T> = {
   tile?: (item: T) => boolean; // which items can be a tile (default: all)
   draw: (l: Line, item: T, i: number, on: boolean) => Line; // a row's content
   hit?: (screenRow: number, i: number) => void; // where each item was drawn
+  pad?: (screenRow: number, i: number) => void; // the air around an item, as part of it
 };
 
 // tileList draws the window of a list and answers its lines and new top.
@@ -43,8 +44,14 @@ export function tileList<T>(s: TileListSpec<T>): { lines: Line[]; top: number } 
   for (let k = 0; k < s.rows; k++) {
     const at = top + k, i = itemAt(at), screen = s.at[0] + k;
     if (i === undefined) lines.push(blank(s.cols, s.base));
-    else if (i < 0) lines.push(at === selAt - 1 || at === selAt + 1 ? tileEdge(at === selAt - 1, s.cols, s.fill, s.base, screen, s.at[1]) : blank(s.cols, s.base));
-    else {
+    else if (i < 0) {
+      lines.push(at === selAt - 1 || at === selAt + 1 ? tileEdge(at === selAt - 1, s.cols, s.fill, s.base, screen, s.at[1]) : blank(s.cols, s.base));
+      // The air belongs to the selected tile it edges, else to the tile below,
+      // else to the one above.
+      const tile = (j: number | undefined) => (j !== undefined && j >= 0 && (s.tile?.(s.items[j]) ?? true) ? j : undefined);
+      const owner = at === selAt - 1 || at === selAt + 1 ? s.selected : (tile(itemAt(at + 1)) ?? tile(itemAt(at - 1)));
+      if (owner !== undefined) s.pad?.(screen, owner);
+    } else {
       const on = at === selAt;
       s.hit?.(screen, i);
       lines.push(row(s.cols, s.base, on ? s.fill : null, (l) => s.draw(l, s.items[i], i, on), true));

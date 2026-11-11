@@ -34,11 +34,16 @@ export function draw(a: App): void {
   const t = a.theme;
   frame.begin(s, t.sidebar);
   a.rowMap.clear();
-  const rows: string[] = [header(a).toString()];
-  const body = a.tab === "changes" ? changes(a) : a.tab === "history" ? history(a) : config(a);
-  // A column of canvas either side keeps the cards off the pane's edges.
-  for (const l of body) rows.push(`${bg(t.canvas)} ${l}${bg(t.canvas)} `);
-  rows[s.rows - 1] = footer(a).toString();
+  a.padRows.clear();
+  let rows: string[];
+  if (a.loading) rows = loadingRows(a);
+  else {
+    rows = [header(a).toString()];
+    const body = a.tab === "changes" ? changes(a) : a.tab === "history" ? history(a) : config(a);
+    // A column of canvas either side keeps the cards off the pane's edges.
+    for (const l of body) rows.push(`${bg(t.canvas)} ${l}${bg(t.canvas)} `);
+    rows[s.rows - 1] = footer(a).toString();
+  }
 
   // Overlays draw over the rows; they go last, after the frame's other rows.
   let over = "";
@@ -65,6 +70,18 @@ export function draw(a: App): void {
   out += "\x1b[?2026l";
   a.t.write(out);
   a.t.flush();
+}
+
+// loadingRows is the pane while qvist reads the repository: a spinner and
+// the repository's name in the middle of the canvas.
+const spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+function loadingRows(a: App): string[] {
+  const t = a.theme, { rows, cols } = a.size;
+  const frame = spinner[a.spin % spinner.length], label = a.name ? `Opening ${a.name}…` : "Opening…";
+  const blank = new Line(cols, t.canvas).toString();
+  const middle = new Line(cols, t.canvas).pad(Math.trunc((cols - width(frame) - 2 - width(label)) / 2)).add(frame, t.accent).add("  " + label, t.tertiary).toString();
+  return Array.from({ length: rows }, (_, i) => (i === Math.trunc(rows / 2) ? middle : blank));
 }
 
 // header: the repository and branch, then the tabs

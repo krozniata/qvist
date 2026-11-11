@@ -30,7 +30,7 @@ jobs:
       - name: Build
         run: |
           mkdir dist
-          bun build src/main.ts --compile --target=bun-darwin-arm64 --define "QVIST_VERSION=\"${GITHUB_REF_NAME#v}\"" --outfile dist/qvist
+          bun build src/main.ts src/model/diffworker.ts --compile --target=bun-darwin-arm64 --define "QVIST_VERSION=\"${GITHUB_REF_NAME#v}\"" --outfile dist/qvist
           cp LICENSE THIRD_PARTY_NOTICES dist/
           tar -czf qvist-darwin-arm64.tar.gz -C dist qvist LICENSE THIRD_PARTY_NOTICES
           shasum -a 256 qvist-darwin-arm64.tar.gz > qvist-darwin-arm64.tar.gz.sha256

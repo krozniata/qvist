@@ -1,14 +1,14 @@
 // The pane's state, its lifecycle, and the questions the views ask of it.
 // What input does lives beside it in app/; drawing is views/'s.
 import { watch, type FSWatcher } from "node:fs";
-import { type Diff, warmUp } from "../model/diff";
+import type { Diff } from "../model/diff";
 import { draw } from "../views/draw";
 import * as git from "../git";
 import { readEvents } from "../terminal/input";
 import type { Size, Terminal } from "../terminal/term";
 import type { RGB, Theme } from "../theme";
 import { askColors, detectTheme } from "./colors";
-import { loadDiff } from "./diffs";
+import { dropFileDiffs, loadDiff } from "./diffs";
 import { handle } from "./input";
 import { remote } from "./remote";
 
@@ -34,7 +34,8 @@ export const scopes: git.Scope[] = ["global", "local", "system"];
 export type Picker = { mode: "switch" | "base"; query: string; sel: number; top: number; branches: git.Branch[] };
 export type PickerItem = { kind: "branch"; branch: git.Branch } | { kind: "create"; name: string } | { kind: "createFrom"; name: string };
 
-const themeEvery = 250;
+const themeEvery = 2000;
+const firstFetchAfter = 4000;
 const fetchEvery = 3 * 60 * 1000;
 const statusTime = 4000;
 
@@ -54,6 +55,8 @@ export class App {
   // rowMap maps a screen row to the list item drawn there, set by each draw,
   // so a click finds its item however the list is spaced.
   rowMap = new Map<number, number>();
+  // padRows are those of them that are the air around an item, not the item.
+  padRows = new Set<number>();
   // Where draw put the header's branch and the picker, for clicks.
   branchSpan: [number, number] = [0, 0];
   scopeSpans: [number, number][] = [];
@@ -68,6 +71,9 @@ export class App {
   diffKey = "";
   diffTop = 0;
   diffLeft = 0;
+  sizeTimer?: ReturnType<typeof setInterval>;
+  loading = false; // reading the repository for the first time
+  spin = 0; // the loading spinner's frame
   split = false;
   // full shows every unmodified line of the file, not just those around changes.
   full = true;
@@ -95,8 +101,8 @@ export class App {
   // Remotes: syncing names what is running, for the button to say.
   remotes: string[] = [];
   syncing: "fetch" | "pull" | "push" | "sync" | null = null;
-  fetchTimer: ReturnType<typeof setInterval> | undefined;
-  // The terminal's colours as last reported, asked again four times a second:
+  fetchTimer: ReturnType<typeof setTimeout> | undefined;
+  // The terminal's colours as last reported, asked again every two seconds:
   // a terminal's word of theme changes (2031) only covers dark against light,
   // not one dark theme for another.
   // Keyed by what was asked: "11" the background, "10" the foreground, and
@@ -128,34 +134,84 @@ export class App {
   // ── lifecycle ──
 
   async start(dir: string): Promise<void> {
+    // The pane may still be settling to its size while the theme and the
+    // repository load, so watch for resizes from the start and measure again
+    // before anything draws.
+    process.on("SIGWINCH", () => this.measure());
+    // Reading the repository doesn't need the theme, so it goes on while the
+    // terminal answers about its colours.
+    const opened = this.open(dir);
     this.theme = await detectTheme(this);
-    warmUp();
+    this.measure();
+    // A new split starts as the default 80×24 and takes its real size a moment
+    // later, so draw nothing at the default until it has had that moment. A
+    // terminal that really is 80×24 never changes, so once the repository is
+    // read the wait is cut short rather than run its length.
+    let read = false;
+    void opened.then(() => (read = true));
+    for (let waited = 0; waited < 1500 && !(read && waited >= 250) && this.size.cols === 80 && this.size.rows === 24; waited += 25) {
+      await Bun.sleep(25);
+      this.measure();
+    }
+    // Until the first refresh is in, show that qvist is working. It goes in
+    // line with the watcher's refreshes, and should one have gone first, the
+    // status read at the start is older than its own and is read again.
+    this.loading = true;
+    const spinning = setInterval(() => (this.spin++, this.render()), 80);
+    this.render();
+    const first = await opened;
     try {
-      this.repo = await git.topLevel(dir);
-      this.name = this.repo.split("/").pop() ?? this.repo;
-      this.watch();
-      this.remotes = await git.remotes(this.repo).catch(() => []);
-      // Fetch now and every few minutes, so the ↓ count stays current.
-      if (this.remotes.length > 0) {
+      await new Promise<void>((done) => this.serial(() => this.refresh(true, this.status ? null : first).finally(done)));
+    } finally {
+      clearInterval(spinning);
+      this.loading = false;
+      this.render();
+    }
+    // A fetch brings the ↓ count up to date: the first a few seconds in, so it
+    // won't compete with the first diff, and then every few minutes.
+    if (this.remotes.length > 0) {
+      this.fetchTimer = setTimeout(() => {
         void remote(this, "fetch", true);
         this.fetchTimer = setInterval(() => void remote(this, "fetch", true), fetchEvery);
-      }
+      }, firstFetchAfter);
+    }
+  }
+
+  // open finds the repository, then reads its remotes and status together. It
+  // answers the status read, or null when there is none to give; a failure
+  // is said on screen, since nothing waits on this yet to catch it.
+  private async open(dir: string): Promise<[git.Status, git.Identity | null] | null> {
+    let repo: string;
+    try {
+      repo = await git.topLevel(dir);
     } catch {
       this.flash(`${dir} is not in a git repository`, true);
+      return null;
     }
-    await this.refresh();
+    this.repo = repo;
+    this.name = repo.split("/").pop() ?? repo;
+    // Watching starts before the status is read, so a change made while it
+    // is read still brings a refresh.
+    this.watch();
+    try {
+      const [remotes, read] = await Promise.all([git.remotes(repo).catch(() => []), this.read()]);
+      this.remotes = remotes;
+      return read;
+    } catch (err) {
+      this.flash(err instanceof Error ? err.message : String(err), true);
+      return null;
+    }
   }
 
   run(): Promise<void> {
     return new Promise((resolve) => {
       this.quit = resolve;
       readEvents(process.stdin, (ev) => this.serial(() => handle(this, ev)));
-      process.on("SIGWINCH", () => {
-        this.size = this.t.size();
-        this.render();
-      });
       this.t.enableInput();
       this.themeTimer = setInterval(() => askColors(this), themeEvery);
+      // A split can settle to its size, or its pixel size, without a signal
+      // reaching us, so look again now and then rather than trust one.
+      this.sizeTimer = setInterval(() => this.measure(), 250);
       this.render();
     });
   }
@@ -163,8 +219,17 @@ export class App {
   stop(): void {
     this.suspended = true;
     this.watcher?.close();
+    clearTimeout(this.fetchTimer);
     clearInterval(this.fetchTimer);
     clearInterval(this.themeTimer);
+    clearInterval(this.sizeTimer);
+  }
+
+  // measure reads the terminal's size and draws again if it changed.
+  measure(): void {
+    const was = this.size, now = this.t.size();
+    this.size = now;
+    if (was.rows !== now.rows || was.cols !== now.cols || was.width !== now.width || was.height !== now.height) this.render();
   }
 
   // serial runs input handlers one at a time, so a slow git call never
@@ -197,14 +262,27 @@ export class App {
     if (files.includes(".git/config")) this.identity = null;
     // A change in .git, or one the watcher couldn't name, always counts.
     const inGit = files.some((f) => f === "" || f === ".git" || f.startsWith(".git/"));
-    if (inGit || !(await git.allIgnored(this.repo!, files))) await this.refresh();
+    // A fetch only moves the remote branches, which leaves every diff as it was.
+    const fetched = files.every((f) => /^\.git\/(FETCH_HEAD|packed-refs|refs\/remotes\/.*)$/.test(f));
+    // A change in the work tree alone leaves the other files' diffs as they were.
+    if (inGit || !(await git.allIgnored(this.repo!, files))) await this.refresh(!fetched, null, inGit ? undefined : files);
   }
 
-  async refresh(): Promise<void> {
+  // read answers the status and who commits. Who commits is read again only
+  // after a change to config cleared it.
+  private read(): Promise<[git.Status, git.Identity | null]> {
+    return Promise.all([git.status(this.repo!), this.identity ?? git.identity(this.repo!).catch(() => null)]);
+  }
+
+  // refresh reads the status again and, unless diffs is false, the diff on
+  // screen too, dropping the files' diffs built before: those of the paths
+  // given, or all of them. A fetch changes neither, so after one they are
+  // kept, and with them the files' loaded diffs.
+  async refresh(diffs = true, read: [git.Status, git.Identity | null] | null = null, paths?: string[]): Promise<void> {
     if (!this.repo) return this.render();
     const keep = this.current();
-    // Who commits is read again only after a change to config cleared it.
-    [this.status, this.identity] = await Promise.all([git.status(this.repo), this.identity ?? git.identity(this.repo).catch(() => null)]);
+    [this.status, this.identity] = read ?? (await this.read());
+    if (diffs) dropFileDiffs(this, paths);
     this.items = [];
     const s = this.status;
     if (s.staged.length > 0) {
@@ -218,7 +296,7 @@ export class App {
     this.sel = again >= 0 ? again : Math.min(this.sel, this.items.length - 1);
     if (this.items[this.sel]?.kind !== "file") this.moveSel(1, false);
     await this.loadTab();
-    await loadDiff(this, true);
+    await loadDiff(this, diffs);
     this.render();
   }
 
@@ -310,12 +388,14 @@ export class App {
   suspended = false;
 
   // pickerItems are, when switching, the two ways to create a branch, then
-  // the branches matching the query, local ones first.
+  // the branches matching the query, local ones first, the current one at
+  // the top and the rest by latest commit, as git lists them.
   pickerItems(): PickerItem[] {
     const p = this.picker!, q = p.query.trim().toLowerCase();
     const match = (b: git.Branch) => q === "" || b.name.toLowerCase().includes(q);
     const branches: PickerItem[] = [
-      ...p.branches.filter((b) => !b.remote && match(b)),
+      ...p.branches.filter((b) => b.current && match(b)),
+      ...p.branches.filter((b) => !b.current && !b.remote && match(b)),
       ...p.branches.filter((b) => b.remote && match(b)),
     ].map((branch) => ({ kind: "branch", branch }));
     if (p.mode === "base") return branches;

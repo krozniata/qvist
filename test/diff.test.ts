@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { colourChunk, orderChunks, paint, planChunks } from "../src/model/chunks";
 import { buildDiff, type Row } from "../src/model/diff";
 
 const patch = `diff --git a/greet.ts b/greet.ts
@@ -59,5 +60,51 @@ describe("buildDiff", () => {
   test("shows a binary file as binary, and an empty patch as nothing", async () => {
     expect((await buildDiff("a.png", "Binary files a/a.png and b/a.png differ\n")).binary).toBe(true);
     expect((await buildDiff("a.txt", "")).unified).toEqual([]);
+  });
+});
+
+describe("colouring in pieces", () => {
+  // A long single hunk, as a new file or the whole file shown, with changes
+  // spread through it and a block comment in the middle.
+  const long = (n: number) => {
+    let p = `diff --git a/x.ts b/x.ts\n--- a/x.ts\n+++ b/x.ts\n@@ -1,${n} +1,${n} @@\n`;
+    for (let i = 0; i < n; i++) p += i % 50 === 7 ? `-const v${i} = f(${i}, "old");\n+const v${i} = f(${i}, "new");\n` : ` const v${i} = f(${i}, "same");\n`;
+    return p;
+  };
+
+  test("gives the rows and colours of colouring the whole file", async () => {
+    const p = long(900);
+    const [whole, plain] = [await buildDiff("x.ts", p), await buildDiff("x.ts", p, true)];
+    const chunks = planChunks(p, plain);
+    expect(chunks!.length).toBeGreaterThan(3);
+    for (const c of orderChunks(chunks!, plain)) paint(plain, (await colourChunk("x.ts", c))!);
+    expect(plain.unified).toEqual(whole.unified);
+    expect(plain.split).toEqual(whole.split);
+  });
+
+  test("starts at the piece with the first change and moves outward", async () => {
+    const p = long(900);
+    const plain = await buildDiff("x.ts", p, true);
+    const chunks = planChunks(p, plain)!;
+    const first = plain.unified.findIndex((r) => r.kind === "line" && r.type !== "context");
+    const order = orderChunks(chunks, plain);
+    expect(order[0].rows.includes(first)).toBe(true);
+    expect(order).toHaveLength(chunks.length);
+  });
+
+  test("plans nothing for a patch that doesn't line up with its rows", async () => {
+    const p = long(300);
+    const plain = await buildDiff("x.ts", p, true);
+    expect(planChunks(p + "@@ -1 +1 @@\n-a\n+b\n", plain)).toBeNull();
+  });
+
+  test("handles many small hunks grouped into pieces", async () => {
+    let p = "diff --git a/x.ts b/x.ts\n--- a/x.ts\n+++ b/x.ts\n";
+    for (let h = 0; h < 60; h++) p += `@@ -${h * 40 + 1},5 +${h * 40 + 1},5 @@ fn${h}\n const a${h} = 1;\n-const b${h} = 2;\n+const b${h} = 3;\n const c${h} = 4;\n const d${h} = 5;\n`;
+    const [whole, plain] = [await buildDiff("x.ts", p), await buildDiff("x.ts", p, true)];
+    const chunks = planChunks(p, plain)!;
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const c of orderChunks(chunks, plain)) paint(plain, (await colourChunk("x.ts", c))!);
+    expect(plain.unified).toEqual(whole.unified);
   });
 });

@@ -56,30 +56,37 @@ function spansOf(node: Hast | undefined): Span[] {
   return out;
 }
 
-async function highlight(file: FileDiffMetadata) {
-  const lang = getFiletypeFromFileName(file.name);
-  try {
-    const hl = await getSharedHighlighter({ themes: [themes.dark, themes.light], langs: [lang] } as never);
-    return renderDiffWithHighlighter(file, hl, { theme: themes, lineDiffType: "word-alt" } as never).code;
-  } catch {
-    const hl = await getSharedHighlighter({ themes: [themes.dark, themes.light], langs: [] } as never);
-    return renderDiffWithHighlighter(file, hl, { theme: themes } as never, { forcePlainText: true }).code;
+// A patch this long, in characters, goes without word-level emphasis, which
+// costs a third more on top of the syntax colours.
+const wordDiffLimit = 200_000;
+export const wordsFor = (patch: string) => patch.length < wordDiffLimit;
+
+async function highlight(file: FileDiffMetadata, plain: boolean, words: boolean) {
+  if (!plain) {
+    try {
+      const hl = await getSharedHighlighter({ themes: [themes.dark, themes.light], langs: [getFiletypeFromFileName(file.name)] } as never);
+      return renderDiffWithHighlighter(file, hl, { theme: themes, lineDiffType: words ? "word-alt" : "none" } as never).code;
+    } catch {}
   }
+  const hl = await getSharedHighlighter({ themes: [themes.dark, themes.light], langs: [] } as never);
+  return renderDiffWithHighlighter(file, hl, { theme: themes } as never, { forcePlainText: true }).code;
 }
 
 // warmUp loads the highlighter and the common languages' grammars ahead of
 // the first diff, so it doesn't pay for them.
-export function warmUp(): void {
+export function warmUp(): Promise<unknown> {
   const langs = ["typescript", "tsx", "javascript", "json", "markdown", "python", "swift", "rust", "go", "css", "html", "shellscript", "yaml", "lua"];
-  getSharedHighlighter({ themes: [themes.dark, themes.light], langs } as never).catch(() => {});
+  return getSharedHighlighter({ themes: [themes.dark, themes.light], langs } as never).catch(() => {});
 }
 
-export async function buildDiff(path: string, patch: string): Promise<Diff> {
+// buildDiff makes the rows of one file's patch. plain skips the syntax
+// colours, which is the quick way to have something to show.
+export async function buildDiff(path: string, patch: string, plain = false, words = wordsFor(patch)): Promise<Diff> {
   const empty: Diff = { path, binary: false, added: 0, removed: 0, hunks: 0, unified: [], split: [] };
   if (/^Binary files .* differ$/m.test(patch)) return { ...empty, binary: true };
   const file = parsePatchFiles(patch)[0]?.files[0];
   if (!file || file.hunks.length === 0) return empty;
-  const code = await highlight(file);
+  const code = await highlight(file, plain, words);
   const del = (i: number) => spansOf(code.deletionLines[i] as Hast | undefined);
   const add = (i: number) => spansOf(code.additionLines[i] as Hast | undefined);
 

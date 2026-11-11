@@ -26,7 +26,7 @@ export async function remote(a: App, what: "fetch" | "pull" | "push" | "sync", q
     if (what === "pull" || what === "sync") await git.pull(repo);
     if (what === "push" || what === "sync") await git.push(repo, publish ?? undefined);
     a.syncing = null;
-    a.serial(() => a.refresh());
+    a.serial(() => a.refresh(what !== "fetch"));
     if (!quiet) a.flash(what === "fetch" ? "Fetched" : what === "pull" ? "Pulled" : publish ? `Published ${publish.branch} to ${publish.remote}` : what === "push" ? "Pushed" : "Synced");
   } catch (err) {
     a.syncing = null;

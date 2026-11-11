@@ -40,6 +40,10 @@ function diffLines(a: App, cols: number, height: number): Line[] {
   out.push(bar, blank(cols, t.surface));
   if (d.binary) out.push(new Line(cols, t.surface).add(" Binary file not shown", t.tertiary));
   const rows = a.rows();
+  // Scrolling sideways stops when the longest line's end reaches the edge.
+  const wide = widest(rows);
+  const longest = Math.max(0, wide.unified + gutter * 2 + 6 - cols, wide.side + gutter + 6 - Math.trunc(cols / 2));
+  a.diffLeft = Math.max(0, Math.min(a.diffLeft, longest));
   for (let i = a.diffTop; out.length < height; i++) {
     const r = rows[i];
     if (!r) {
@@ -53,6 +57,23 @@ function diffLines(a: App, cols: number, height: number): Line[] {
     if (r.kind === "hunk" && out.length < height) out.push(blank(cols, t.surface));
   }
   return out;
+}
+
+const spansWidth = (spans: Span[]) => spans.reduce((n, sp) => n + width(sp.text), 0);
+
+// widest is the width of the longest line of code in rows, as a whole line
+// and as one side of a split; worked out once per diff, not per frame.
+const widths = new WeakMap<Row[], { unified: number; side: number }>();
+function widest(rows: Row[]): { unified: number; side: number } {
+  let w = widths.get(rows);
+  if (w) return w;
+  w = { unified: 0, side: 0 };
+  for (const r of rows) {
+    if (r.kind === "line") w.unified = Math.max(w.unified, spansWidth(r.spans));
+    else if (r.kind === "split") for (const s of [r.left, r.right]) if (s) w.side = Math.max(w.side, spansWidth(s.spans));
+  }
+  widths.set(rows, w);
+  return w;
 }
 
 function diffRow(a: App, r: Row, cols: number): Line {
