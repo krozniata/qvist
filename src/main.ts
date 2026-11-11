@@ -2,6 +2,7 @@
 // terminal, with Pierre's diffs, in the colours of the Rex theme around it.
 import { App } from "./app/app";
 import { install, uninstall } from "./install/install";
+import { warmWorker } from "./model/background";
 import { Terminal } from "./terminal/term";
 
 // The release workflow defines QVIST_VERSION when it builds a release.
@@ -25,6 +26,8 @@ async function main(args: string[]): Promise<void> {
     console.error("qvist: run qvist in a terminal");
     process.exit(1);
   }
+  // The diff worker takes a while to set up, so it starts before anything else.
+  warmWorker();
   const t = Terminal.open();
   const a = new App(t);
   const done = () => {

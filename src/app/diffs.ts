@@ -1,6 +1,7 @@
 // Loading the diff on screen in the background, and keeping its place.
 import * as git from "../git";
-import { buildDiff, type Diff, type Row } from "../model/diff";
+import { buildIfIdle, buildInBackground } from "../model/background";
+import type { Diff, Row } from "../model/diff";
 import type { App } from "./app";
 
 // lineNo answers a diff row's line number in the new file, or the old for a
@@ -18,6 +19,50 @@ function changed(r: Row): boolean {
   return r.left?.type !== "context" || r.right?.type !== "context";
 }
 
+// The cache's keys: a changed file's diff, and a commit's, which the prefix
+// sets apart since a commit's never changes and a file's may.
+const changesKey = (a: App, c: git.Change) => `${c.staged}:${c.path}:${a.full}`;
+const historyKey = (a: App, sha: string, path: string) => `h:${sha}:${path}:${a.full}`;
+const isHistoryKey = (key: string) => key.startsWith("h:");
+
+// dropFileDiffs forgets the changed files' diffs after the files may have
+// changed: those of the paths given, or all of them. It also stops any diff
+// being built, which may have read a patch from before the change.
+export function dropFileDiffs(a: App, paths?: Iterable<string>): void {
+  a.diffToken++;
+  const only = paths && new Set(paths);
+  for (const k of a.diffCache.keys()) {
+    if (isHistoryKey(k)) continue;
+    // A changed file's key is "staged:path:full", and neither end has a colon.
+    if (!only || only.has(k.slice(k.indexOf(":") + 1, k.lastIndexOf(":")))) a.diffCache.delete(k);
+  }
+}
+
+// recall answers a kept diff, and keeps it longest of those there now.
+function recall(a: App, key: string): Diff | undefined {
+  const d = a.diffCache.get(key);
+  if (d) {
+    a.diffCache.delete(key);
+    a.diffCache.set(key, d);
+  }
+  return d;
+}
+
+// remember keeps a built diff, a hundred at most. The one used longest ago
+// goes first, a changed file's before a commit's, since a commit's never
+// changes and prefetch can always build a file's again.
+function remember(a: App, key: string, d: Diff): void {
+  a.diffCache.delete(key);
+  a.diffCache.set(key, d);
+  if (a.diffCache.size <= 100) return;
+  let old: string | undefined;
+  for (const k of a.diffCache.keys()) if (!isHistoryKey(k)) {
+    old = k;
+    break;
+  }
+  a.diffCache.delete(old ?? a.diffCache.keys().next().value!);
+}
+
 // loadDiff waits a moment for the selection to settle, so holding j only
 // loads where it stops; a refresh loads at once.
 export function loadDiff(a: App, force = false): Promise<void> {
@@ -28,17 +73,18 @@ export function loadDiff(a: App, force = false): Promise<void> {
       if (token === a.diffToken) a.flash(err instanceof Error ? err.message : String(err), true);
     });
   };
-  if (force) go();
+  const c = a.tab === "changes" ? a.current() : null;
+  if (force || (c && a.diffCache.has(changesKey(a, c)))) go();
   else setTimeout(go, 40);
   return Promise.resolve();
 }
 
 export async function fetchDiff(a: App, token: number, force: boolean): Promise<void> {
   let key = "";
-  let load: (() => Promise<Diff>) | null = null;
+  let load: (() => Promise<[path: string, patch: string]>) | null = null;
   if (a.tab === "changes") {
     const c = a.current(), repo = a.repo;
-    if (c && repo) [key, load] = [`${c.staged}:${c.path}:${a.full}`, async () => buildDiff(c.path, await git.patchFor(repo, c, a.context()))];
+    if (c && repo) [key, load] = [changesKey(a, c), async () => [c.path, await git.patchFor(repo, c, a.context())]];
   } else if (a.tab === "history") {
     const c = a.commits[a.hsel], repo = a.repo!;
     if (c && a.filesOf !== c.sha) {
@@ -55,7 +101,7 @@ export async function fetchDiff(a: App, token: number, force: boolean): Promise<
       a.files = files;
     }
     const f = a.files[a.fsel];
-    if (c && f) [key, load] = [`h:${c.sha}:${f.path}:${a.full}`, async () => buildDiff(f.path, await git.commitPatch(repo, c.sha, f.path, a.context()))];
+    if (c && f) [key, load] = [historyKey(a, c.sha, f.path), async () => [f.path, await git.commitPatch(repo, c.sha, f.path, a.context())]];
   } else {
     return;
   }
@@ -70,26 +116,80 @@ export async function fetchDiff(a: App, token: number, force: boolean): Promise<
     [a.diff, a.diffLoading, a.diffSlow] = [null, false, false];
     return a.render();
   }
-  const hit = force && !key.startsWith("h:") ? undefined : a.diffCache.get(key);
+  const hit = force && !isHistoryKey(key) ? undefined : recall(a, key);
   if (hit) {
     [a.diff, a.diffLoading, a.diffSlow] = [hit, false, false];
     toAnchor(a);
-    return a.render();
+    a.render();
+    return prefetch(a, token);
   }
   a.diffLoading = true;
   setTimeout(() => {
     if (token !== a.diffToken || !a.diffLoading) return;
     a.diffSlow = true;
     a.render();
-  }, 150);
-  const d = await load();
+  }, 400);
+  const [path, patch] = await load();
   if (token !== a.diffToken) return;
-  a.diffCache.set(key, d);
-  if (a.diffCache.size > 100) a.diffCache.delete(a.diffCache.keys().next().value!);
+  // Rows to show come back at once and their colours follow, so the diff
+  // opens where it should before the first of them arrives.
+  let shown = false;
+  const d = await buildInBackground(path, patch, {
+    show: (live) => {
+      if (token !== a.diffToken) return;
+      [a.diff, a.diffLoading, a.diffSlow] = [live, false, false];
+      if (!shown) toAnchor(a);
+      shown = true;
+      a.render();
+    },
+    progress: () => {
+      if (token === a.diffToken) a.render();
+    },
+  });
+  if (!d || token !== a.diffToken) return;
+  remember(a, key, d);
   [a.diff, a.diffLoading, a.diffSlow] = [d, false, false];
-  toAnchor(a);
+  if (!shown) toAnchor(a);
   a.diffTop = Math.min(a.diffTop, Math.max(0, a.rows().length - 1));
   a.render();
+  return prefetch(a, token);
+}
+
+// How many changed files prefetch takes on, and how long a patch it leaves
+// for when it is opened.
+const prefetchFiles = 40, prefetchLongest = 150_000;
+
+// prefetch builds the diffs of the changed files while nothing else is asked,
+// nearest the selection first, so moving to one shows it at once. It starts
+// once things have settled, stops when the selection or the files change, and
+// gives a file a few tries to find the worker free.
+async function prefetch(a: App, token: number): Promise<void> {
+  if (a.tab !== "changes" || !a.repo) return;
+  const repo = a.repo, sel = a.sel;
+  const near = a.items
+    .map((it, i) => ({ it, i }))
+    .filter((x) => x.it.kind === "file" && x.i !== sel)
+    .sort((x, y) => Math.abs(x.i - sel) - Math.abs(y.i - sel))
+    .slice(0, prefetchFiles);
+  for (const [n, { it }] of near.entries()) {
+    // The two nearest files go at once; the rest wait for things to settle.
+    if (n === 2) await Bun.sleep(300);
+    if (it.kind !== "file") continue;
+    const c = it.change, key = changesKey(a, c);
+    if (token !== a.diffToken) return;
+    if (a.diffCache.has(key)) continue;
+    const patch = await git.patchFor(repo, c, a.context()).catch(() => null);
+    if (token !== a.diffToken) return;
+    if (patch === null || patch.length > prefetchLongest) continue;
+    let built: Diff | null = null;
+    for (let tries = 0; !built && tries < 20; tries++) {
+      built = await buildIfIdle(c.path, patch).catch(() => null);
+      if (token !== a.diffToken) return;
+      if (!built) await Bun.sleep(100);
+    }
+    if (!built) continue;
+    remember(a, key, built);
+  }
 }
 
 // toggleFull shows or hides the unmodified lines, keeping the line at the
